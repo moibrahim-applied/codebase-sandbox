@@ -1,6 +1,6 @@
 # Mettler-Toledo FreeWeigh.Net — web console (demo target)
 # This container ships the operator UI for the FreeWeigh.Net production system.
-FROM nginx:1.25.4
+FROM nginx:1.27.0
 
 LABEL maintainer="ProdX Team <prodx@mt.com>"
 LABEL mt.product="FreeWeigh.Net"
