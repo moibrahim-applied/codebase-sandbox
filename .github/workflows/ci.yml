@@ -1,0 +1,17 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+jobs:
+  build-and-smoke-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -t freeweigh-console:test .
+      - name: Smoke test
+        run: |
+          chmod +x tests/smoke_test.sh
+          ./tests/smoke_test.sh
