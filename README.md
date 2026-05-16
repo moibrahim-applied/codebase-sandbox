@@ -1,7 +1,35 @@
-# MT FreeWeigh.Net — Console (demo target)
+# MT codebase sandbox — multi-service demo target
 
-Demo target for the MT Security Patch Agent showcase. Minimal containerized
-representation of the FreeWeigh.Net operator UI: nginx static-site + smoke test.
+This repository is the live target the **MT Security Patch Agent** patches when
+CVEs are discovered against MT's containerized stack.
 
-The CVE patching agent edits the `FROM` line in `Dockerfile` whenever a CVE
-is reported against the pinned base image.
+## Layout
+
+Each tracked container has its own folder under `services/`:
+
+```
+services/
+└── <container-name>/
+    ├── Dockerfile        ← agent edits the FROM line here
+    ├── (config files)
+    └── (tests/, optional)
+```
+
+The patch agent finds the right Dockerfile via `grep -rn "FROM <container>:"`
+and edits only the version pin.
+
+## Services
+
+| Service | Base image | Used by |
+|---|---|---|
+| `nginx` | `nginx:1.25.4` | FreeWeigh.Net web console |
+
+New services are scaffolded automatically when an operator clicks **Add Container**
+in the Lovable inventory page — the Coding Agent's `POST /add-container` endpoint
+appends a row to the Supabase `containers` table AND creates a matching
+`services/<name>/Dockerfile` here.
+
+## CI
+
+`.github/workflows/ci.yml` discovers every folder under `services/` and runs
+`docker build` + optional smoke test for each in a matrix job.

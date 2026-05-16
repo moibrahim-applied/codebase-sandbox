@@ -5,13 +5,35 @@ on:
   pull_request:
     branches: [main]
 jobs:
-  build-and-smoke-test:
+  discover-services:
     runs-on: ubuntu-latest
+    outputs:
+      services: ${{ steps.list.outputs.services }}
     steps:
       - uses: actions/checkout@v4
-      - name: Build image
-        run: docker build -t freeweigh-console:test .
-      - name: Smoke test
+      - id: list
         run: |
-          chmod +x tests/smoke_test.sh
-          ./tests/smoke_test.sh
+          svcs=$(ls -1 services 2>/dev/null | jq -R . | jq -sc .)
+          echo "services=$svcs" >> "$GITHUB_OUTPUT"
+  build-and-smoke-test:
+    needs: discover-services
+    if: ${{ needs.discover-services.outputs.services != '[]' }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service: ${{ fromJson(needs.discover-services.outputs.services) }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image for ${{ matrix.service }}
+        working-directory: services/${{ matrix.service }}
+        run: docker build -t mt-sandbox-${{ matrix.service }}:test .
+      - name: Smoke test ${{ matrix.service }}
+        working-directory: services/${{ matrix.service }}
+        run: |
+          if [ -f tests/smoke_test.sh ]; then
+            chmod +x tests/smoke_test.sh
+            ./tests/smoke_test.sh
+          else
+            echo "No smoke_test.sh — skipping (build-only verification)"
+          fi
