@@ -22,7 +22,7 @@ and edits only the version pin.
 
 | Service | Base image | Used by |
 |---|---|---|
-| `nginx` | `nginx:1.25.4` | FreeWeigh.Net web console |
+| `nginx` | `nginx:1.20.1` | FreeWeigh.Net web console |
 
 New services are scaffolded automatically when an operator clicks **Add Container**
 in the Lovable inventory page — the Coding Agent's `POST /add-container` endpoint
