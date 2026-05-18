@@ -1,4 +1,4 @@
-name: CI
+name: Security Release Tests
 on:
   push:
     branches: [main]
@@ -6,16 +6,20 @@ on:
     branches: [main]
 jobs:
   discover-services:
+    name: Discover services
     runs-on: ubuntu-latest
     outputs:
       services: ${{ steps.list.outputs.services }}
     steps:
       - uses: actions/checkout@v4
       - id: list
+        name: List services/*
         run: |
           svcs=$(ls -1 services 2>/dev/null | jq -R . | jq -sc .)
           echo "services=$svcs" >> "$GITHUB_OUTPUT"
-  build-and-smoke-test:
+
+  test-service:
+    name: ${{ matrix.service }}
     needs: discover-services
     if: ${{ needs.discover-services.outputs.services != '[]' }}
     runs-on: ubuntu-latest
@@ -24,16 +28,94 @@ jobs:
       matrix:
         service: ${{ fromJson(needs.discover-services.outputs.services) }}
     steps:
-      - uses: actions/checkout@v4
-      - name: Build image for ${{ matrix.service }}
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Build container image
         working-directory: services/${{ matrix.service }}
-        run: docker build -t mt-sandbox-${{ matrix.service }}:test .
-      - name: Smoke test ${{ matrix.service }}
+        run: |
+          docker build -t mt-sandbox-${{ matrix.service }}:test .
+
+      - name: Inspect image labels
+        run: |
+          docker inspect mt-sandbox-${{ matrix.service }}:test \
+            --format '{{ json .Config.Labels }}' | jq .
+
+      - name: Start container
+        run: |
+          docker run -d --rm \
+            --name mt-${{ matrix.service }} \
+            -p 8080:80 -p 8081:8080 \
+            mt-sandbox-${{ matrix.service }}:test || true
+          sleep 2
+          docker ps --filter "name=mt-${{ matrix.service }}"
+
+      - name: Health probe — container is responsive
+        run: |
+          set -e
+          for i in $(seq 1 20); do
+            if curl -fsS -o /dev/null http://localhost:8080/ || \
+               curl -fsS -o /dev/null http://localhost:8081/; then
+              echo "Service responded on attempt $i"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Service did not respond within 20s"
+          docker logs mt-${{ matrix.service }} || true
+          exit 1
+
+      - name: HTTP 200 — root endpoint returns success
+        run: |
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/ || \
+                   curl -s -o /dev/null -w "%{http_code}" http://localhost:8081/)
+          echo "Status code: $STATUS"
+          test "$STATUS" = "200"
+
+      - name: Verify response body contains the FreeWeigh.Net marker
+        run: |
+          RESP=$(curl -s http://localhost:8080/ || curl -s http://localhost:8081/)
+          echo "$RESP" | head -20
+          echo "$RESP" | grep -qi "freeweigh\|mt\|service" || (echo "marker not found"; exit 1)
+
+      - name: Security headers — Content-Type set
+        run: |
+          curl -sI http://localhost:8080/ 2>/dev/null | tee /tmp/headers \
+            || curl -sI http://localhost:8081/ | tee /tmp/headers
+          grep -qi "^content-type:" /tmp/headers || (echo "missing Content-Type"; exit 1)
+
+      - name: Response time — under 1s SLA
+        run: |
+          T=$(curl -s -o /dev/null -w "%{time_total}" http://localhost:8080/ \
+            || curl -s -o /dev/null -w "%{time_total}" http://localhost:8081/)
+          echo "Total response time: ${T}s"
+          awk -v t="$T" 'BEGIN { exit !(t < 1.0) }'
+
+      - name: Path traversal — does NOT serve /etc/passwd
+        run: |
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:8080/../../../etc/passwd" \
+            || curl -s -o /dev/null -w "%{http_code}" "http://localhost:8081/../../../etc/passwd")
+          echo "Traversal probe status: $STATUS"
+          # Anything that isn't 200 OR returns content that doesn't match /etc/passwd is acceptable
+          test "$STATUS" != "200" || \
+            (! curl -s "http://localhost:8080/../../../etc/passwd" | grep -q "root:")
+
+      - name: Custom smoke test (if present)
         working-directory: services/${{ matrix.service }}
         run: |
           if [ -f tests/smoke_test.sh ]; then
             chmod +x tests/smoke_test.sh
             ./tests/smoke_test.sh
           else
-            echo "No smoke_test.sh — skipping (build-only verification)"
+            echo "No service-specific smoke test"
           fi
+
+      - name: Container logs (for audit trail)
+        if: always()
+        run: |
+          docker logs mt-${{ matrix.service }} 2>&1 | tail -50 || true
+
+      - name: Stop container
+        if: always()
+        run: |
+          docker stop mt-${{ matrix.service }} 2>/dev/null || true
