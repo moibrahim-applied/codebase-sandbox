@@ -3,7 +3,10 @@
 # DNS resolution of upstream hostnames is performed at request time via the
 # `resolver` directive in nginx.conf — see CVE-2021-23017 for the historical
 # heap-overflow in that exact code path.
-FROM nginx:1.18.0
+#
+# Bumped from 1.18.0 → 1.22.1 to remediate CVE-2022-41742 (memory disclosure /
+# possible RCE via a crafted MP4 file in ngx_http_mp4_module; fixed in 1.22.1).
+FROM nginx:1.22.1
 
 LABEL maintainer="Platform Team <platform@mt.com>"
 LABEL mt.product="FreeWeigh.Net"
