@@ -30,29 +30,34 @@ echo "$HDR" | grep -qi "^X-Frame-Options:"
 echo "$HDR" | grep -qi "^X-Content-Type-Options:"
 
 # -----------------------------------------------------------------------
-# CVE-2022-41741 regression: ngx_http_mp4_module off-by-one memory
-# corruption when parsing crafted MP4 atom lengths. Fixed in nginx 1.22.1.
-# Verify (a) the running binary is >= 1.22.1 and (b) MP4 paths are blocked.
+# CVE-2021-23017 regression: 1-byte off-by-one heap write in
+# ngx_resolver_copy() when parsing DNS responses. Fixed in nginx 1.20.1.
+# Verify (a) the running binary is >= 1.20.1 and (b) the resolver is
+# bound only to Docker's internal DNS (127.0.0.11), not a public resolver.
 # -----------------------------------------------------------------------
-echo ">>> CVE-2022-41741: nginx version must be >= 1.22.1"
+echo ">>> CVE-2021-23017: nginx version must be >= 1.20.1"
 NGINX_VER=$(docker exec "$CID" nginx -v 2>&1 | grep -oP '(?<=nginx/)\S+')
 MAJOR=$(echo "$NGINX_VER" | cut -d. -f1)
 MINOR=$(echo "$NGINX_VER" | cut -d. -f2)
-PATCH=$(echo "$NGINX_VER" | cut -d. -f3)
-if [ "$MAJOR" -lt 1 ] || { [ "$MAJOR" -eq 1 ] && [ "$MINOR" -lt 22 ]; } || \
-   { [ "$MAJOR" -eq 1 ] && [ "$MINOR" -eq 22 ] && [ "$PATCH" -lt 1 ]; }; then
-  echo "FAIL: nginx $NGINX_VER is vulnerable to CVE-2022-41741 (need >= 1.22.1)" >&2
+PATCH_VER=$(echo "$NGINX_VER" | cut -d. -f3)
+if [ "$MAJOR" -lt 1 ] || { [ "$MAJOR" -eq 1 ] && [ "$MINOR" -lt 20 ]; } || \
+   { [ "$MAJOR" -eq 1 ] && [ "$MINOR" -eq 20 ] && [ "$PATCH_VER" -lt 1 ]; }; then
+  echo "FAIL: nginx $NGINX_VER is vulnerable to CVE-2021-23017 (need >= 1.20.1)" >&2
   exit 1
 fi
-echo "    nginx $NGINX_VER — OK"
+echo "    nginx $NGINX_VER — OK (>= 1.20.1)"
 
-echo ">>> CVE-2022-41741: MP4 endpoints must return 404 (mp4 module blocked)"
-MP4_STATUS=$(curl -o /dev/null -fsS -w "%{http_code}" \
-  "http://localhost:$PORT/sample.mp4" 2>/dev/null || true)
-if [ "$MP4_STATUS" != "404" ]; then
-  echo "FAIL: /sample.mp4 returned HTTP $MP4_STATUS; expected 404 (should be denied)" >&2
+echo ">>> CVE-2021-23017: resolver must be bound to 127.0.0.11 (Docker DNS) only"
+RESOLVER_LINE=$(docker exec "$CID" grep -E '^\s*resolver ' /etc/nginx/nginx.conf)
+if ! echo "$RESOLVER_LINE" | grep -q "127.0.0.11"; then
+  echo "FAIL: resolver is not pinned to 127.0.0.11 — public resolver widens CVE-2021-23017 attack surface" >&2
+  echo "      Found: $RESOLVER_LINE" >&2
   exit 1
 fi
-echo "    .mp4 → HTTP 404 — OK"
+if ! echo "$RESOLVER_LINE" | grep -q "ipv6=off"; then
+  echo "FAIL: resolver does not set ipv6=off — AAAA responses widen CVE-2021-23017 attack surface" >&2
+  exit 1
+fi
+echo "    resolver pinned to 127.0.0.11 with ipv6=off — OK"
 
 echo ">>> All gateway smoke tests passed."

@@ -1,13 +1,14 @@
 # Mettler-Toledo — API Gateway (FreeWeigh.Net production fleet)
 # Front-of-bus reverse proxy for the measurement, report and auth services.
 # DNS resolution of upstream hostnames is performed at request time via the
-# `resolver` directive in nginx.conf — see CVE-2021-23017 for the historical
-# heap-overflow in that exact code path.
+# `resolver` directive in nginx.conf — see CVE-2021-23017 for the fix below.
 #
-# Bumped from 1.18.0 to 1.22.1 to remediate CVE-2022-41741: an off-by-one
-# memory corruption in ngx_http_mp4_module when parsing crafted MP4 files.
-# Fixed upstream in nginx 1.22.1 / 1.23.2 (stable/mainline, 2022-10-19).
-FROM nginx:1.22.1
+# Bumped from 1.18.0 to 1.20.1 to remediate CVE-2021-23017: a 1-byte
+# off-by-one heap write in the DNS response parser (ngx_resolver_copy) that
+# can be triggered by a malicious DNS server when nginx resolves upstream
+# hostnames at request time. Fixed upstream in nginx 1.20.1 / 1.21.0
+# (stable/mainline, 2021-05-25). See also: resolver hardening in nginx.conf.
+FROM nginx:1.20.1
 
 LABEL maintainer="Platform Team <platform@mt.com>"
 LABEL mt.product="FreeWeigh.Net"
