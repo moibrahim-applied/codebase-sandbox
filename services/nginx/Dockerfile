@@ -3,7 +3,12 @@
 # DNS resolution of upstream hostnames is performed at request time via the
 # `resolver` directive in nginx.conf — see CVE-2021-23017 for the historical
 # heap-overflow in that exact code path.
-FROM nginx:1.18.0
+#
+# Pinned to 1.22.1: fixes CVE-2022-41741 (mp4 module memory corruption in
+# ngx_http_mp4_module when parsing a crafted MP4 file; worker-process crash /
+# potential code execution). 1.22.1 is the earliest stable release that
+# carries the patch. Do NOT downgrade below this line without a risk waiver.
+FROM nginx:1.22.1
 
 LABEL maintainer="Platform Team <platform@mt.com>"
 LABEL mt.product="FreeWeigh.Net"
