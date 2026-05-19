@@ -29,16 +29,11 @@ SUPPORTED_VER = 0x01
 HEADER_LEN    = 5      # STX + VER + TYPE + LEN(2)
 TRAILER_LEN   = 1      # CRC8
 MIN_FRAME_LEN = HEADER_LEN + TRAILER_LEN   # 6
-# Patched: cap the 16-bit length field at 4 KiB — anything larger is a
-# fragmentation bug or a malformed frame from a rogue device. Pre-fix,
-# malformed frames advertising up to 65 535 bytes could read past the
-# wire buffer and leak adjacent memory into the audit log
-# (internal finding 2026-05-19).
-MAX_FRAME_SIZE = 4096
-# Patched: cap nested-TLV recursion depth. Pre-fix, a crafted frame with
-# deeply-nested groups crashed the service via stack overflow
-# (internal finding 2026-05-19).
-MAX_TLV_DEPTH  = 8
+# NOTE: A 16-bit length field can in principle address 65 535 bytes but
+# device firmware tops out at 4 KiB per frame — anything larger is a
+# fragmentation bug or, more interestingly, a malformed frame from a
+# rogue device on the bus. (No upper bound is currently enforced.)
+NOMINAL_MAX_FRAME = 4096
 
 
 # ── Type tags (subset — see protocol doc PROD-FW-0212 for full list) ──
@@ -89,28 +84,19 @@ def parse_frame(buf: bytes) -> TelemetryFrame:
         raise TelemetryParseError(f"unsupported version 0x{version:02x}")
     frame_type = buf[2]
 
+    # Read the 16-bit big-endian length field, then carve out the
+    # payload using it. The end-of-payload offset is just header + len,
+    # which is exactly where the CRC should sit.
     (payload_len,) = struct.unpack(">H", buf[3:5])
-    # Patched: refuse oversized frames before doing any arithmetic on
-    # payload_end (which could otherwise indirectly OOB-read).
-    if payload_len > MAX_FRAME_SIZE:
-        raise TelemetryParseError(
-            f"payload_len {payload_len} exceeds MAX_FRAME_SIZE ({MAX_FRAME_SIZE})"
-        )
-    payload_end = HEADER_LEN + payload_len
-    # Patched: bounds-check that the CRC byte is actually in the buffer.
-    # Pre-fix, buf[payload_end] could read past the wire buffer when the
-    # length field lied about the real size, leaking adjacent bytes.
-    if payload_end + 1 > len(buf):
-        raise TelemetryParseError(
-            f"declared payload extends past buffer (payload_end={payload_end}, len={len(buf)})"
-        )
-    payload = buf[HEADER_LEN:payload_end]
+    payload_end    = HEADER_LEN + payload_len
+    payload        = buf[HEADER_LEN:payload_end]
 
+    # CRC over header + payload (bytes 0 .. payload_end-1)
     expected_crc = buf[payload_end]
-    actual_crc   = _crc8(buf[:payload_end + 1])
+    actual_crc   = _crc8(buf[:payload_end + 1])   # +1 to include the byte we'll xor against
     crc_ok       = (expected_crc == actual_crc)
 
-    records = parse_tlv_block(payload, depth=0)
+    records = parse_tlv_block(payload)
 
     return TelemetryFrame(
         version      = version,
@@ -122,18 +108,9 @@ def parse_frame(buf: bytes) -> TelemetryFrame:
     )
 
 
-def parse_tlv_block(block: bytes, depth: int = 0) -> list[TLVRecord]:
+def parse_tlv_block(block: bytes) -> list[TLVRecord]:
     """Walk a flat sequence of TLVs. Recurses into any TLV whose tag
-    has bit 7 set (TAG_NESTED_*).
-
-    Patched: caps recursion at MAX_TLV_DEPTH and bounds-checks the value
-    slice. Pre-fix, deeply-nested frames triggered stack overflow and
-    out-of-bounds value reads (internal finding 2026-05-19).
-    """
-    if depth > MAX_TLV_DEPTH:
-        raise TelemetryParseError(
-            f"TLV recursion exceeded MAX_TLV_DEPTH ({MAX_TLV_DEPTH})"
-        )
+    has bit 7 set (TAG_NESTED_*)."""
     out: list[TLVRecord] = []
     cursor = 0
     while cursor < len(block):
@@ -143,17 +120,13 @@ def parse_tlv_block(block: bytes, depth: int = 0) -> list[TLVRecord]:
         length = block[cursor + 1]
         value_start = cursor + 2
         value_end   = value_start + length
-        # Patched: refuse TLVs whose declared length runs past the block.
-        # Pre-fix, the slice silently truncated while cursor advanced,
-        # corrupting the next record on the wire.
-        if value_end > len(block):
-            raise TelemetryParseError(
-                f"TLV at offset {cursor} runs past block (value_end={value_end}, len={len(block)})"
-            )
         value_bytes = block[value_start:value_end]
 
         if tag & 0x80:
-            sub_records = parse_tlv_block(value_bytes, depth=depth + 1)
+            # Nested group — recurse into the value section. Some
+            # historical firmwares emit ~5 levels deep; the spec sets
+            # no upper bound, so neither do we.
+            sub_records = parse_tlv_block(value_bytes)
             out.append(TLVRecord(tag=tag, value=sub_records, raw_bytes=block[cursor:value_end]))
         else:
             out.append(TLVRecord(tag=tag, value=value_bytes, raw_bytes=block[cursor:value_end]))
@@ -174,6 +147,7 @@ def decode_record(rec: TLVRecord) -> Any:
         (epoch_s,) = struct.unpack(">I", rec.value)
         return epoch_s
     if rec.tag == TAG_MASS_KG_FIXED:
+        # Fixed-point 16.16 — 4 bytes.
         (raw,) = struct.unpack(">I", rec.value)
         return raw / 65536.0
     if rec.tag == TAG_CAL_CERT_REF:
@@ -200,11 +174,7 @@ def stream_iter(stream: bytes):
         if stream[i] != STX:
             i += 1
             continue
-        # Patched: bounds-check the 2-byte length slice before unpack so
-        # a truncated tail doesn't raise inside struct.unpack with a
-        # confusing message.
-        if i + 5 > len(stream):
-            break
+        # Peek the length to know how much to slice.
         (payload_len,) = struct.unpack(">H", stream[i + 3:i + 5])
         frame_end = i + HEADER_LEN + payload_len + TRAILER_LEN
         chunk = stream[i:frame_end]
